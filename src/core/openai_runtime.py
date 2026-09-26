@@ -62,14 +62,31 @@ class OpenAIRunner:
             return block_msg
 
         client = self._client()
-        completion = client.chat.completions.create(
-            model=self.model,
-            messages=[
+        request = {
+            "model": self.model,
+            "messages": [
                 {"role": "system", "content": agent.instruction},
                 {"role": "user", "content": user_message},
             ],
-            temperature=self.temperature,
-        )
+            "temperature": self.temperature,
+        }
+        try:
+            completion = client.chat.completions.create(**request)
+        except Exception as exc:
+            # OpenRouter currently exposes Liquid LFM2.5-2.6B through its
+            # documented :free variant. Preserve the lab's locked base model
+            # ID and retry only when that exact model has no base endpoint.
+            no_base_endpoint = (
+                self.provider == "openrouter"
+                and getattr(exc, "status_code", None) == 404
+                and "No endpoints found" in str(exc)
+                and not self.model.endswith(":free")
+            )
+            if not no_base_endpoint:
+                raise
+            self.model = f"{self.model}:free"
+            request["model"] = self.model
+            completion = client.chat.completions.create(**request)
         text = (completion.choices[0].message.content or "").strip()
 
         for hook in self.output_hooks:

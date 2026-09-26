@@ -11,6 +11,7 @@ Status convention (không dùng True/False mơ hồ):
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Literal
 
 from google.genai import types
@@ -51,14 +52,27 @@ def detect_injection(user_input: str) -> InputStatus:
     Returns:
         ``"BLOCK"`` if injection detected (chặn), ``"ALLOW"`` otherwise (cho qua).
     """
+    normalized_input = unicodedata.normalize("NFKC", user_input or "")
+    normalized_input = re.sub(r"[\u200b-\u200f\u2060\ufeff]", "", normalized_input)
+    normalized_input = re.sub(r"\s+", " ", normalized_input)
     INJECTION_PATTERNS = [
         # TODO: Add at least 5 regex patterns
         # Example:
-        # r"ignore (all )?(previous|above) instructions",
+        r"\bignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions?\b",
+        r"\bdisregard\s+(?:all\s+)?(?:previous|above|prior)?\s*(?:instructions?|rules?)\b",
+        r"\b(?:you\s+are\s+now|from\s+now\s+on\s+you\s+are)\b",
+        r"\b(?:system|developer)\s+prompt\b|\bsystem\s+override\b",
+        r"\breveal\s+(?:your\s+)?(?:instructions?|prompt|secrets?|credentials?)\b",
+        r"\bpretend\s+(?:you\s+are|to\s+be)\b",
+        r"\bact\s+as\s+(?:an?\s+)?unrestricted\b",
+        r"\b(?:print|show|repeat|dump)\s+(?:the\s+)?(?:hidden|internal|system)\s+(?:prompt|instructions?|secrets?)\b",
+        r"\btranslate\s+(?:your\s+)?(?:system\s+prompt|instructions?)\b",
+        r"\bbypass\s+(?:all\s+)?(?:safety|security)\s+(?:rules|filters|guardrails)\b",
+        r"\b(?:developer|system)\s+message\s+(?:says|is|was)\b",
     ]
 
     for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+        if re.search(pattern, normalized_input, re.IGNORECASE):
             return "BLOCK"
     return "ALLOW"
 
@@ -84,14 +98,24 @@ def topic_filter(user_input: str) -> InputStatus:
         ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
         ``"ALLOW"`` = cho qua (câu banking hợp lệ).
     """
-    input_lower = user_input.lower()
+    input_lower = unicodedata.normalize("NFKD", user_input or "").casefold()
+    input_lower = "".join(c for c in input_lower if not unicodedata.combining(c))
+    input_lower = re.sub(r"[^a-z0-9]+", " ", input_lower)
 
     # TODO: Implement logic:
     # 1. If input contains any blocked topic -> return "BLOCK"
     # 2. If input doesn't contain any allowed topic -> return "BLOCK"
     # 3. Otherwise -> return "ALLOW"
 
-    pass  # Replace with your implementation
+    def contains_topic(topic: str) -> bool:
+        escaped = re.escape(topic.casefold())
+        return re.search(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])", input_lower) is not None
+
+    if any(contains_topic(topic) for topic in BLOCKED_TOPICS):
+        return "BLOCK"
+    if not any(contains_topic(topic) for topic in ALLOWED_TOPICS):
+        return "BLOCK"
+    return "ALLOW"
 
 
 # ============================================================
@@ -151,7 +175,17 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         #    - If "BLOCK": increment blocked_count, return self._block_response("...")
         # 3. If both return "ALLOW": return None (let message through)
 
-        pass  # Replace with your implementation
+        if detect_injection(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "I cannot follow instruction overrides. I can help with VinBank banking questions."
+            )
+        if topic_filter(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "I can only help with banking-related questions."
+            )
+        return None
 
 
 # ============================================================

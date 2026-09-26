@@ -13,6 +13,7 @@ from google.adk import runners
 from google.adk.plugins import base_plugin
 
 from core.utils import chat_with_agent
+from core.config import DEMO_SECRETS
 
 
 # ============================================================
@@ -37,16 +38,23 @@ def content_filter(response: str) -> dict:
         dict with 'safe', 'issues', and 'redacted' keys
     """
     issues = []
-    redacted = response
+    redacted = response or ""
 
     # PII patterns to check
     PII_PATTERNS = {
         # TODO: Add regex patterns for:
         # - VN phone number: r"0\d{9,10}"
+        "vn_phone": r"(?<!\d)(?:\+?84|0)(?:[ .-]?\d){9,10}(?!\d)",
         # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
+        "email": r"\b[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}\b",
         # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
+        "national_id": r"(?<!\d)(?:\d{9}|\d{12})(?!\d)",
         # - API key pattern: r"sk-[a-zA-Z0-9-]+"
+        "api_key": r"\bsk-[a-zA-Z0-9_-]{8,}\b",
         # - Password pattern: r"password\s*[:=]\s*\S+"
+        "password": r"\b(?:admin\s+)?password\s*(?:(?:is|=|:)\s*)?\S+",
+        "database_host": r"\b[a-z0-9.-]+\.internal(?::\d+)?\b",
+        "demo_secret": r"\badmin123\b",
     }
 
     for name, pattern in PII_PATTERNS.items():
@@ -54,6 +62,12 @@ def content_filter(response: str) -> dict:
         if matches:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
+
+    # Also catch the exact protected demo values if they appear without a label.
+    for secret in DEMO_SECRETS:
+        if secret and secret.casefold() in redacted.casefold():
+            issues.append("protected_secret: 1 found")
+            redacted = re.sub(re.escape(secret), "[REDACTED]", redacted, flags=re.IGNORECASE)
 
     return {
         "safe": len(issues) == 0,
@@ -181,6 +195,24 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         #    - Increment self.blocked_count
         # 3. Return llm_response (possibly modified)
 
+        filtered = content_filter(response_text)
+        safe_text = filtered["redacted"]
+        if safe_text != response_text:
+            self.redacted_count += 1
+            llm_response.content = types.Content(
+                role="model", parts=[types.Part.from_text(text=safe_text)]
+            )
+
+        if self.use_llm_judge:
+            judge_result = await llm_safety_check(response_text)
+            if not judge_result["safe"]:
+                self.blocked_count += 1
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(
+                        text="I cannot provide that response. Please ask a banking-related question."
+                    )],
+                )
         return llm_response  # TODO: modify if needed
 
 

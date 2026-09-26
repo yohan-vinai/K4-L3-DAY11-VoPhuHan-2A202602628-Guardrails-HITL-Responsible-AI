@@ -109,7 +109,15 @@ def get_blue_model() -> str:
 
 
 def get_openrouter_api_key() -> str:
-    return os.environ.get("OPENROUTER_API_KEY", "").strip()
+    return _configured_api_key(os.environ.get("OPENROUTER_API_KEY", ""))
+
+
+def _configured_api_key(value: str) -> str:
+    """Treat copied .env.example values as missing instead of real credentials."""
+    key = (value or "").strip()
+    if not key or "..." in key or key.lower() in {"your-api-key", "replace-me"}:
+        return ""
+    return key
 
 
 def blue_client_kwargs() -> dict:
@@ -166,7 +174,7 @@ def get_red_model_advance() -> str:
 
 
 def get_openai_api_key() -> str:
-    return os.environ.get("OPENAI_API_KEY", "").strip()
+    return _configured_api_key(os.environ.get("OPENAI_API_KEY", ""))
 
 
 def red_openai_client_kwargs() -> dict:
@@ -234,18 +242,24 @@ def is_harder_model() -> bool:
     return any(x in m for x in ("gpt-5.6", "pro", "gemini-3.8", "gemini-3.7"))
 
 
-def setup_api_key():
-    """Ensure keys for Blue (OpenRouter) + Red / Red Advance (OpenAI or Gemini)."""
-    if not get_openrouter_api_key():
-        os.environ["OPENROUTER_API_KEY"] = input(
-            "Enter OpenRouter API Key (Blue): "
-        ).strip()
-    print(f"Blue  — {blue_provider_label()}  [LOCKED]")
+def setup_api_key(*, require_blue: bool = True, require_red: bool = True):
+    """Prompt only for providers required by the selected lab checkpoint."""
+    if require_blue:
+        if not get_openrouter_api_key():
+            os.environ["OPENROUTER_API_KEY"] = input(
+                "Enter OpenRouter API Key (Blue): "
+            ).strip()
+        print(f"Blue  — {blue_provider_label()}  [LOCKED]")
+    else:
+        print("Blue API key not needed for this checkpoint.")
+
+    if not require_red:
+        return
 
     red = get_red_provider()
     model = get_red_model()
     if red == PROVIDER_GEMINI:
-        if not os.environ.get("GOOGLE_API_KEY", "").strip():
+        if not _configured_api_key(os.environ.get("GOOGLE_API_KEY", "")):
             os.environ["GOOGLE_API_KEY"] = input("Enter Google API Key (Red): ").strip()
         os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "0"
         print(f"Red / Red Advance  — gemini:{model}")
